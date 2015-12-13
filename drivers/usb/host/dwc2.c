@@ -848,8 +848,7 @@ static int dwc2_eptype[] = {
 };
 
 int chunk_msg(struct dwc2_priv *priv, struct usb_device *dev,
-	      unsigned long pipe, int *pid, int in, void *buffer, int len,
-	      bool ignore_ack)
+	      unsigned long pipe, int *pid, int in, void *buffer, int len)
 {
 	struct dwc2_core_regs *regs = priv->regs;
 	struct dwc2_hc_regs *hc_regs = &regs->hc_regs[DWC2_HC_CHANNEL];
@@ -863,23 +862,50 @@ int chunk_msg(struct dwc2_priv *priv, struct usb_device *dev,
 	uint32_t xfer_len;
 	uint32_t num_packets;
 	int stop_transfer = 0;
+	uint32_t hctsiz;
+	uint32_t hcint;
+	uint32_t hcint_rem;
+	uint8_t do_split = 0;
+	uint8_t complete_split = 0;
+	uint8_t start_again = 0;
+	uint8_t hub_addr = 0;
+	uint8_t hub_port = 0;
 
 	debug("%s: msg: pipe %lx pid %d in %d len %d\n", __func__, pipe, *pid,
 	      in, len);
 
+	/* Initialize channel */
+	dwc_otg_hc_init(regs, DWC2_HC_CHANNEL, dev, devnum, ep, in,
+			eptype, max);
+
+	/* Check if the target is a FS/LS device behind a HS hub */
+	if (dev->speed != USB_SPEED_HIGH) {
+		uint32_t hprt0 = readl(&regs->hprt0);
+		if ((hprt0 & DWC2_HPRT0_PRTSPD_MASK) ==
+			DWC2_HPRT0_PRTSPD_HIGH) {
+			do_split = 1;
+			dwc_find_hub_address_port(dev, &hub_addr, &hub_port);
+		}
+	}
+
 	do {
-		/* Initialize channel */
-		dwc_otg_hc_init(regs, DWC2_HC_CHANNEL, dev, devnum, ep, in,
-				eptype, max);
+		/* Clear old interrupt conditions for this host channel. */
+		writel(0x3fff, &hc_regs->hcint);
+
+		if (do_split)
+			dwc_otg_hc_init_split(regs, DWC2_HC_CHANNEL, hub_addr,
+					      hub_port, complete_split);
 
 		xfer_len = len - done;
+		if (do_split && xfer_len > max)
+			xfer_len = max;
 		if (xfer_len > CONFIG_DWC2_MAX_TRANSFER_SIZE)
 			xfer_len = CONFIG_DWC2_MAX_TRANSFER_SIZE - max + 1;
 		if (xfer_len > DWC2_DATA_BUF_SIZE)
 			xfer_len = DWC2_DATA_BUF_SIZE - max + 1;
 
 		/* Make sure that xfer_len is a multiple of max packet size. */
-		if (xfer_len > 0) {
+		if (xfer_len > max) {
 			num_packets = (xfer_len + max - 1) / max;
 			if (num_packets > CONFIG_DWC2_MAX_PACKET_COUNT) {
 				num_packets = CONFIG_DWC2_MAX_PACKET_COUNT;
@@ -918,9 +944,53 @@ int chunk_msg(struct dwc2_priv *priv, struct usb_device *dev,
 				(1 << DWC2_HCCHAR_MULTICNT_OFFSET) |
 				DWC2_HCCHAR_CHEN);
 
-		ret = wait_for_chhltd(regs, &sub, pid, ignore_ack);
+		ret = wait_for_bit(&hc_regs->hcint, DWC2_HCINT_CHHLTD, true);
 		if (ret)
 			break;
+
+		hcint = readl(&hc_regs->hcint);
+		hcint_rem = hcint & ~(DWC2_HCINT_XFERCOMP | DWC2_HCINT_CHHLTD);
+
+		hctsiz = readl(&hc_regs->hctsiz);
+		sub = (hctsiz & DWC2_HCTSIZ_XFERSIZE_MASK) >>
+			DWC2_HCTSIZ_XFERSIZE_OFFSET;
+		*pid = (hctsiz & DWC2_HCTSIZ_PID_MASK) >>
+			DWC2_HCTSIZ_PID_OFFSET;
+
+		start_again = 0;
+		if (complete_split) {
+			complete_split = 0;
+			if (hcint_rem & DWC2_HCINT_NYET) {
+				hcint_rem &= ~DWC2_HCINT_NYET;
+				start_again = 1;
+			}
+		} else if (do_split) {
+			if (hcint_rem & DWC2_HCINT_NAK) {
+				hcint_rem &= ~DWC2_HCINT_NAK;
+				/* should never happen, as there are no
+				 * concurrent transactions */
+				printf("TT busy\n");
+				ret = -EINVAL;
+			} else if (hcint_rem & DWC2_HCINT_ACK) {
+				complete_split = 1;
+				start_again = 1;
+			}
+		}
+
+		if (start_again) {
+			sub = 0;
+			xfer_len = 0;
+		}
+
+		if (hcint_rem & ~(DWC2_HCINT_NAK | DWC2_HCINT_FRMOVRUN |
+			DWC2_HCINT_ACK)) {
+			debug("%s: Error (HCINT=%08x)\n", __func__, hcint);
+			ret = -EINVAL;
+			break;
+		} else if (hcint_rem & (DWC2_HCINT_NAK | DWC2_HCINT_FRMOVRUN)) {
+			ret = -EAGAIN;
+			break;
+		}
 
 		if (in) {
 			xfer_len -= sub;
@@ -930,13 +1000,13 @@ int chunk_msg(struct dwc2_priv *priv, struct usb_device *dev,
 				roundup(xfer_len, ARCH_DMA_MINALIGN)));
 
 			memcpy(buffer + done, priv->aligned_buffer, xfer_len);
-			if (sub)
+			if (sub) /* short transfer/ZLP */
 				stop_transfer = 1;
 		}
 
 		done += xfer_len;
 
-	} while ((done < len) && !stop_transfer);
+	} while (((done < len) && !stop_transfer) || start_again);
 
 	writel(0, &hc_regs->hcintmsk);
 	writel(0xFFFFFFFF, &hc_regs->hcint);
@@ -960,7 +1030,7 @@ int _submit_bulk_msg(struct dwc2_priv *priv, struct usb_device *dev,
 	}
 
 	return chunk_msg(priv, dev, pipe, &priv->bulk_data_toggle[devnum][ep],
-			 usb_pipein(pipe), buffer, len, true);
+			 usb_pipein(pipe), buffer, len);
 }
 
 static int _submit_control_msg(struct dwc2_priv *priv, struct usb_device *dev,
@@ -980,7 +1050,7 @@ static int _submit_control_msg(struct dwc2_priv *priv, struct usb_device *dev,
 	}
 
 	pid = DWC2_HC_PID_SETUP;
-	ret = chunk_msg(priv, dev, pipe, &pid, 0, setup, 8, true);
+	ret = chunk_msg(priv, dev, pipe, &pid, 0, setup, 8);
 	if (ret)
 		return ret;
 
@@ -995,7 +1065,7 @@ static int _submit_control_msg(struct dwc2_priv *priv, struct usb_device *dev,
 				return -ETIMEDOUT;
 			}
 			ret = chunk_msg(priv, dev, pipe, &pid, usb_pipein(pipe),
-					buffer, len, false);
+					buffer, len);
 			act_len += dev->act_len;
 			buffer += dev->act_len;
 			len -= dev->act_len;
@@ -1013,7 +1083,7 @@ static int _submit_control_msg(struct dwc2_priv *priv, struct usb_device *dev,
 	pid = DWC2_HC_PID_DATA1;
 	do {
 		ret = chunk_msg(priv, dev, pipe, &pid, status_direction,
-				priv->status_buffer, 0, false);
+				priv->status_buffer, 0);
 	} while (ret == -EAGAIN);
 	if (ret)
 		return ret;
