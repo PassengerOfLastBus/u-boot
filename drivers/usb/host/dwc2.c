@@ -806,40 +806,6 @@ static int dwc_otg_submit_rh_msg(struct dwc2_priv *priv, struct usb_device *dev,
 	return stat;
 }
 
-int wait_for_chhltd(struct dwc2_core_regs *regs, uint32_t *sub, int *toggle,
-		    bool ignore_ack)
-{
-	uint32_t hcint_comp_hlt_ack = DWC2_HCINT_XFERCOMP | DWC2_HCINT_CHHLTD;
-	struct dwc2_hc_regs *hc_regs = &regs->hc_regs[DWC2_HC_CHANNEL];
-	int ret;
-	uint32_t hcint, hctsiz;
-
-	ret = wait_for_bit(&hc_regs->hcint, DWC2_HCINT_CHHLTD, true);
-	if (ret)
-		return ret;
-
-	hcint = readl(&hc_regs->hcint);
-	if (hcint & (DWC2_HCINT_NAK | DWC2_HCINT_FRMOVRUN))
-		return -EAGAIN;
-	if (ignore_ack)
-		hcint &= ~DWC2_HCINT_ACK;
-	else
-		hcint_comp_hlt_ack |= DWC2_HCINT_ACK;
-	if (hcint != hcint_comp_hlt_ack) {
-		debug("%s: Error (HCINT=%08x)\n", __func__, hcint);
-		return -EINVAL;
-	}
-
-	hctsiz = readl(&hc_regs->hctsiz);
-	*sub = (hctsiz & DWC2_HCTSIZ_XFERSIZE_MASK) >>
-		DWC2_HCTSIZ_XFERSIZE_OFFSET;
-	*toggle = (hctsiz & DWC2_HCTSIZ_PID_MASK) >> DWC2_HCTSIZ_PID_OFFSET;
-
-	debug("%s: sub=%u toggle=%d\n", __func__, *sub, *toggle);
-
-	return 0;
-}
-
 static int dwc2_eptype[] = {
 	DWC2_HCCHAR_EPTYPE_ISOC,
 	DWC2_HCCHAR_EPTYPE_INTR,
