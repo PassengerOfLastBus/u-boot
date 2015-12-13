@@ -892,8 +892,8 @@ static int _submit_control_msg(struct dwc2_priv *priv, struct usb_device *dev,
 {
 	int devnum = usb_pipedevice(pipe);
 	int pid, ret, act_len;
-	/* For CONTROL endpoint pid should start with DATA1 */
 	int status_direction;
+	unsigned long timeout;
 
 	if (devnum == priv->root_hub_devnum) {
 		dev->status = 0;
@@ -907,26 +907,37 @@ static int _submit_control_msg(struct dwc2_priv *priv, struct usb_device *dev,
 	if (ret)
 		return ret;
 
+	timeout = get_timer(0) + USB_TIMEOUT_MS(pipe);
 	if (buffer) {
+		/* DATA stage */
 		pid = DWC2_HC_PID_DATA1;
-		ret = chunk_msg(priv, dev, pipe, &pid, usb_pipein(pipe), buffer,
-				len, false);
+		act_len = 0;
+		do {
+			if (get_timer(0) > timeout) {
+				printf("Timeout during CONTROL DATA stage\n");
+				return -ETIMEDOUT;
+			}
+			ret = chunk_msg(priv, dev, pipe, &pid, usb_pipein(pipe),
+					buffer, len, false);
+			act_len += dev->act_len;
+			buffer += dev->act_len;
+			len -= dev->act_len;
+		} while (len && (ret == -EAGAIN));
 		if (ret)
 			return ret;
-		act_len = dev->act_len;
-	} /* End of DATA stage */
-	else
+		status_direction = usb_pipeout(pipe);
+	} else {
+		/* No-data CONTROL always ends with an IN transaction */
+		status_direction = 1;
 		act_len = 0;
+	}
 
 	/* STATUS stage */
-	if ((len == 0) || usb_pipeout(pipe))
-		status_direction = 1;
-	else
-		status_direction = 0;
-
 	pid = DWC2_HC_PID_DATA1;
-	ret = chunk_msg(priv, dev, pipe, &pid, status_direction,
-			priv->status_buffer, 0, false);
+	do {
+		ret = chunk_msg(priv, dev, pipe, &pid, status_direction,
+				priv->status_buffer, 0, false);
+	} while (ret == -EAGAIN);
 	if (ret)
 		return ret;
 
