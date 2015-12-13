@@ -495,8 +495,25 @@ static void dwc_otg_hc_init(struct dwc2_core_regs *regs, uint8_t hc_num,
 	 */
 	writel(hcchar, &hc_regs->hcchar);
 
-	/* Program the HCSPLIT register for SPLITs */
+	/* Program the HCSPLIT register, default to no SPLIT */
 	writel(0, &hc_regs->hcsplt);
+}
+
+static void dwc_otg_hc_init_split(struct dwc2_core_regs *regs,
+				  uint8_t hc_num, uint8_t hub_devnum,
+				  uint8_t hub_port, uint8_t complete_split)
+{
+	struct dwc2_hc_regs *hc_regs = &regs->hc_regs[hc_num];
+	uint32_t hcsplt = 0;
+
+	hcsplt = DWC2_HCSPLT_SPLTENA;
+	hcsplt |= hub_devnum << DWC2_HCSPLT_HUBADDR_OFFSET;
+	hcsplt |= hub_port << DWC2_HCSPLT_PRTADDR_OFFSET;
+	if (complete_split)
+		hcsplt |= 1 << DWC2_HCSPLT_COMPSPLT_OFFSET;
+
+	/* Program the HCSPLIT register for SPLITs */
+	writel(hcsplt, &hc_regs->hcsplt);
 }
 
 /*
