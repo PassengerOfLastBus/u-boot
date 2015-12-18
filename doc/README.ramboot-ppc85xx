@@ -82,7 +82,7 @@ In the 2nd case bootloader has already re-located CCSRBAR to 0xffe00000
    P1020RDB_JTAG_RAMBOOT and P1020RDB_GO_RAMBOOT.
 
 2. platform config file
-   for example include/configs/P1_P2_RDB.h
+   for example include/configs/p1_p2_rdb.h
 
    #ifdef CONFIG_RAMBOOT
    #define CONFIG_SDCARD
