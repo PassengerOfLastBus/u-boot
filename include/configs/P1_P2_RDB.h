@@ -671,6 +671,10 @@ extern unsigned long get_board_sys_clk(unsigned long dummy);
 #define CONFIG_DOS_PARTITION
 #endif
 
+#if defined(CONFIG_P1020RDB)
+#define CONFIG_USB_MAX_CONTROLLER_COUNT 1
+#endif
+
 /*
  * Miscellaneous configurable options
  */

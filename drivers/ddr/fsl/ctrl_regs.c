@@ -1732,9 +1732,18 @@ static void set_ddr_sdram_clk_cntl(fsl_ddr_cfg_regs_t *ddr,
 					 const memctl_options_t *popts)
 {
 	unsigned int clk_adjust;	/* Clock adjust */
+	unsigned int ss_en = 0;         /* Source synchronous enable */
+
+#if defined(CONFIG_MPC8541) || defined(CONFIG_MPC8555)
+       /* Per FSL Application Note: AN2805 */
+       ss_en = 1;
+#endif
 
 	clk_adjust = popts->clk_adjust;
-	ddr->ddr_sdram_clk_cntl = (clk_adjust & 0xF) << 23;
+       ddr->ddr_sdram_clk_cntl = (0
+                                  | ((ss_en & 0x1) << 31)
+                                  | ((clk_adjust & 0xF) << 23)
+                                  );
 	debug("FSLDDR: clk_cntl = 0x%08x\n", ddr->ddr_sdram_clk_cntl);
 }
 
@@ -1911,7 +1920,7 @@ static void set_timing_cfg_8(fsl_ddr_cfg_regs_t *ddr,
 		wwt_bg = tccdl - 4;
 	} else {
 		rrt_bg = tccdl - 2;
-		wwt_bg = tccdl - 4;
+		wwt_bg = tccdl - 2;
 	}
 
 	acttoact_bg = picos_to_mclk(common_dimm->trrdl_ps);

@@ -195,14 +195,14 @@ int board_eth_init(bd_t *bis)
 #endif
 #ifdef CONFIG_TSEC2
 	SET_STD_TSEC_INFO(tsec_info[num], 2);
+	if (is_serdes_configured(SGMII_TSEC2)) {
+		puts("eTSEC2 is in sgmii mode.\n");
+		tsec_info[num].flags |= TSEC_SGMII;
+	}
 	num++;
 #endif
 #ifdef CONFIG_TSEC3
 	SET_STD_TSEC_INFO(tsec_info[num], 3);
-	if (is_serdes_configured(SGMII_TSEC3)) {
-		puts("eTSEC3 is in sgmii mode.\n");
-		tsec_info[num].flags |= TSEC_SGMII;
-	}
 	num++;
 #endif
 	if (!num) {
